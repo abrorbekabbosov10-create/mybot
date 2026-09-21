@@ -4,7 +4,12 @@ import random
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, 
+    ReplyKeyboardMarkup, KeyboardButton, 
+    LabeledPrice, PreCheckoutQuery,
+    SwitchInlineQueryChosenChat
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,6 +20,7 @@ ADMIN_ID = 8694110588
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Faol o'yinlarni saqlash
 active_games = {}
 
 class Form(StatesGroup):
@@ -332,46 +338,131 @@ def check_win(b):
     if " " not in b: return "Draw"
     return None
 
-def clear_old_user_games(user_id):
-    to_del = [g_id for g_id, g in active_games.items() if g['player_x'] == user_id or g.get('player_o') == user_id]
+async def disable_user_old_games(user_id):
+    to_del = []
+    for g_id, g in active_games.items():
+        if g['player_x'] == user_id or g.get('player_o') == user_id:
+            to_del.append(g_id)
+            if 'msg_obj' in g and g['msg_obj']:
+                try:
+                    await g['msg_obj'].edit_text("⚠️ **Ushbu o'yin eskirgan yoki bekor qilingan.**", reply_markup=get_xo_board(g_id, disabled=True))
+                except Exception: pass
     for g_id in to_del:
-        del active_games[g_id]
+        if g_id in active_games:
+            del active_games[g_id]
 
 @dp.callback_query(F.data == "noop")
 async def noop_handler(call: types.CallbackQuery):
-    await call.answer("Bu o'yin allaqachon tugagan!", show_alert=True)
+    await call.answer("O'yin yakunlangan!", show_alert=True)
 
 @dp.message(F.text == "🤖 Bot bilan o'ynash")
 async def vs_bot_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    clear_old_user_games(message.from_user.id)
+    await disable_user_old_games(message.from_user.id)
     
     g_id = f"bot_{message.from_user.id}_{int(asyncio.get_event_loop().time())}"
-    active_games[g_id] = {'board': [" "] * 9, 'turn': '❌', 'player_x': message.from_user.id, 'vs_bot': True}
-    await message.answer("🤖 Botga qarshi o'yin boshlandi!\nSiz: ❌\nNavbatingiz:", reply_markup=get_xo_board(g_id))
+    msg = await message.answer("🤖 **Botga qarshi o'yin boshlandi!**\n\nSiz: ❌ (X-lar)\nBot: ⭕ (O-lar)\n\n👉 **Sizning navbatingiz (❌):**", parse_mode="Markdown")
+    
+    active_games[g_id] = {
+        'board': [" "] * 9,
+        'turn': '❌',
+        'player_x': message.from_user.id,
+        'player_x_name': message.from_user.first_name,
+        'vs_bot': True,
+        'msg_obj': msg
+    }
+    await msg.edit_reply_markup(reply_markup=get_xo_board(g_id))
 
 @dp.message(F.text == "👥 Do'st bilan o'ynash")
 async def vs_p_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    clear_old_user_games(message.from_user.id)
+    await disable_user_old_games(message.from_user.id)
     
     g_id = f"pvp_{message.from_user.id}_{int(asyncio.get_event_loop().time())}"
-    active_games[g_id] = {'board': [" "] * 9, 'turn': '❌', 'player_x': message.from_user.id, 'player_o': None, 'vs_bot': False}
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎮 Qo'shilish", callback_data=f"join_{g_id}")]])
-    await message.answer("🎮 Yangi o'yin yaratildi! Raqib tugmani bosishini kuting:", reply_markup=kb)
+    
+    active_games[g_id] = {
+        'board': [" "] * 9,
+        'turn': '❌',
+        'player_x': message.from_user.id,
+        'player_x_name': message.from_user.first_name,
+        'player_o': None,
+        'player_o_name': None,
+        'vs_bot': False,
+        'msg_obj': None
+    }
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📩 Do'stga chaqiruv yuborish", switch_inline_query=f"play_{g_id}")],
+        [InlineKeyboardButton(text="🎮 O'zim shu yerda kutaman (Sinov)", callback_data=f"join_{g_id}")]
+    ])
+    
+    msg = await message.answer(
+        f"🎮 **Yangi o'yin taklifi yaratildi!**\n\n"
+        f"Pastdagi **'📩 Do'stga chaqiruv yuborish'** tugmasini bosing va o'ynamoqchi bo'lgan do'stingizni tanlang!",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    active_games[g_id]['msg_obj'] = msg
+
+@dp.inline_query(F.query.startswith("play_"))
+async def inline_game_invite(inline_query: types.InlineQuery):
+    g_id = inline_query.query.replace("play_", "")
+    if g_id not in active_games:
+        return
+        
+    g = active_games[g_id]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎮 O'yinga qo'shilish", callback_data=f"join_{g_id}")]
+    ])
+    
+    results = [
+        types.InlineQueryResultArticle(
+            id=g_id,
+            title="🎮 Tic-Tac-Toe (X-O) O'yini!",
+            description=f"{g['player_x_name']} sizni o'yinga taklif qilmoqda. Qo'shilish uchun bosing!",
+            input_message_content=types.InputTextMessageContent(
+                message_text=f"🎮 **{g['player_x_name']} bilan X-O O'yini!**\n\n❌ **Yaratuvchi:** {g['player_x_name']}\n⭕ **Raqib:** Kutilmoqda...\n\nO'yinga qo'shilish uchun tugmani bosing:",
+                parse_mode="Markdown"
+            ),
+            reply_markup=kb
+        )
+    ]
+    await inline_query.answer(results, cache_time=1)
 
 @dp.callback_query(F.data.startswith("join_"))
 async def join_game(call: types.CallbackQuery):
     g_id = call.data.replace("join_", "")
     if g_id not in active_games: 
-        return await call.answer("Bu o'yin eskirgan yoki yakunlangan!", show_alert=True)
+        return await call.answer("Bu o'yin bekor qilingan yoki eskirgan!", show_alert=True)
+        
     g = active_games[g_id]
-    if g['player_x'] == call.from_user.id: 
-        return await call.answer("O'zingizga qarshi o'ynay olmaysiz!", show_alert=True)
+    
+    if g['player_o'] is not None:
+        return await call.answer("O'yinga raqib allqachon qo'shilgan!", show_alert=True)
+    
+    if g['player_x'] == call.from_user.id and "inline_message_id" in call:
+        return await call.answer("O'zingizga qarshi o'yna olmaysiz!", show_alert=True)
     
     g['player_o'] = call.from_user.id
-    await call.answer("O'yinga qo'shildingiz!")
-    await call.message.edit_text("🎮 O'yin boshlandi!\n❌ - Yaratuvchi | ⭕ - Raqib\nNavbat: ❌", reply_markup=get_xo_board(g_id))
+    g['player_o_name'] = call.from_user.first_name
+    
+    await call.answer("O'yinga muvaffaqiyatli qo'shildingiz!")
+    
+    text = (
+        f"🎮 **O'yin Boshlandi!**\n\n"
+        f"❌ {g['player_x_name']}\n"
+        f"⭕ {g['player_o_name']}\n\n"
+        f"👉 **Navbat:** ❌ {g['player_x_name']}"
+    )
+    
+    reply_markup = get_xo_board(g_id)
+    
+    if call.inline_message_id:
+        g['inline_message_id'] = call.inline_message_id
+        await bot.edit_message_text(inline_message_id=call.inline_message_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await call.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        g['msg_obj'] = call.message
 
 @dp.callback_query(F.data.startswith("xo_"))
 async def xo_click(call: types.CallbackQuery):
@@ -381,62 +472,96 @@ async def xo_click(call: types.CallbackQuery):
     idx = int(parts[4])
     
     if g_id not in active_games: 
-        await call.answer("O'yin yakunlangan!", show_alert=True)
-        try:
-            await call.message.edit_text("⚠️ Bu o'yin eskirgan yoki yakunlangan.")
-        except Exception: pass
+        await call.answer("Bu o'yin eskirgan yoki tugagan!", show_alert=True)
         return
         
     g = active_games[g_id]
     u_id = call.from_user.id
     
-    if g['vs_bot'] and u_id != g['player_x']: 
-        return await call.answer("Bu sizning o'yiningiz emas!", show_alert=True)
-    if not g['vs_bot']:
-        exp = g['player_x'] if g['turn'] == '❌' else g['player_o']
-        if u_id != exp: 
+    if g['vs_bot']:
+        if u_id != g['player_x']: 
+            return await call.answer("Bu sizning o'yiningiz emas!", show_alert=True)
+    else:
+        if g['player_o'] is None:
+            return await call.answer("Raqib hali qo'shilmadi!", show_alert=True)
+            
+        exp_player = g['player_x'] if g['turn'] == '❌' else g['player_o']
+        if u_id != exp_player: 
             return await call.answer("Hozir sizning navbatingiz emas!", show_alert=True)
         
     if g['board'][idx] != " ": 
-        return await call.answer("Katak band!", show_alert=True)
+        return await call.answer("Bu katak allaqachon band!", show_alert=True)
     
     await call.answer()
+    
+    # Yurish
     g['board'][idx] = g['turn']
     res = check_win(g['board'])
     
     if res: 
-        return await finish_game(call.message, g_id, res)
+        return await finish_game(g_id, res)
 
+    # Botga qarshi
     if g['vs_bot']:
         empty_spots = [i for i, val in enumerate(g['board']) if val == " "]
         if empty_spots:
             g['board'][random.choice(empty_spots)] = '⭕'
             res_b = check_win(g['board'])
             if res_b: 
-                return await finish_game(call.message, g_id, res_b)
-        await call.message.edit_text("Sizning navbatingiz: ❌", reply_markup=get_xo_board(g_id))
+                return await finish_game(g_id, res_b)
+                
+        await g['msg_obj'].edit_text(
+            f"🤖 **Bot bilan o'yin!**\n\n"
+            f"Siz: ❌\nBot: ⭕\n\n"
+            f"👉 **Sizning navbatingiz (❌):**",
+            reply_markup=get_xo_board(g_id),
+            parse_mode="Markdown"
+        )
     else:
+        # PvP (Do'st bilan)
         g['turn'] = '⭕' if g['turn'] == '❌' else '❌'
-        await call.message.edit_text(f"Navbat: {g['turn']}", reply_markup=get_xo_board(g_id))
+        curr_name = g['player_x_name'] if g['turn'] == '❌' else g['player_o_name']
+        text = (
+            f"🎮 **O'yin ketmoqda!**\n\n"
+            f"❌ {g['player_x_name']}\n"
+            f"⭕ {g['player_o_name']}\n\n"
+            f"👉 **Navbat:** {g['turn']} {curr_name}"
+        )
+        reply_markup = get_xo_board(g_id)
+        
+        if 'inline_message_id' in g:
+            await bot.edit_message_text(inline_message_id=g['inline_message_id'], text=text, reply_markup=reply_markup, parse_mode="Markdown")
+        elif g.get('msg_obj'):
+            await g['msg_obj'].edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-async def finish_game(msg, g_id, winner):
+async def finish_game(g_id, winner):
     g = active_games.get(g_id, {})
     px, po = g.get('player_x'), g.get('player_o')
+    px_name = g.get('player_x_name', 'O\'yinchi')
+    po_name = g.get('player_o_name', 'Bot' if g.get('vs_bot') else 'O\'yinchi')
     
     if winner == "Draw":
-        txt = "🤝 Durang yakunlandi!"
+        txt = f"🤝 **O'yin Durang bilan yakunlandi!**\n\nHech kim ochko olmadi."
         if px: db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (px,), commit=True)
-        if po: db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (po,), commit=True)
+        if po and not g.get('vs_bot'): db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (po,), commit=True)
     elif winner == '❌':
-        txt = "🎉 ❌ G'alaba qozondi!"
+        txt = f"🎉 **G'alaba!** ❌ `{px_name}` o'yinda yutdi!\n\n❌ **Yutdi:** {px_name} (+1 g'alaba)\n⭕ **Yutqazdi:** {po_name}"
         if px: db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (px,), commit=True)
-        if po: db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (po,), commit=True)
+        if po and not g.get('vs_bot'): db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (po,), commit=True)
     else:
-        txt = "🎉 ⭕ G'alaba qozondi!"
+        txt = f"🎉 **G'alaba!** ⭕ `{po_name}` o'yinda yutdi!\n\n⭕ **Yutdi:** {po_name} (+1 g'alaba)\n❌ **Yutqazdi:** {px_name}"
         if px: db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (px,), commit=True)
-        if po: db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (po,), commit=True)
+        if po and not g.get('vs_bot'): db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (po,), commit=True)
         
-    await msg.edit_text(txt, reply_markup=get_xo_board(g_id, disabled=True))
+    reply_markup = get_xo_board(g_id, disabled=True)
+    
+    try:
+        if 'inline_message_id' in g:
+            await bot.edit_message_text(inline_message_id=g['inline_message_id'], text=txt, reply_markup=reply_markup, parse_mode="Markdown")
+        elif g.get('msg_obj'):
+            await g['msg_obj'].edit_text(txt, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception: pass
+
     if g_id in active_games:
         del active_games[g_id]
 
