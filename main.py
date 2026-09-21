@@ -9,14 +9,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Muhit o'zgaruvchilari ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+# --- Bot Token va Admin ID ---
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8880269827:AAFrLdxPWnz4fEU4GMw8PkY6b_2KUrvF5b8")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # O'zingizning Telegram ID ingizni kiriting
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# O'yinlar xotirasi
+# Faol o'yinlar xotirasi
 active_games = {}
 
 class Form(StatesGroup):
@@ -25,6 +25,7 @@ class Form(StatesGroup):
     waiting_for_channel_url = State()
     waiting_for_add_bal_user = State()
     waiting_for_add_bal_amount = State()
+    waiting_for_card = State()
 
 # --- Ma'lumotlar bazasi ---
 def init_db():
@@ -53,6 +54,12 @@ def init_db():
             user_id INTEGER,
             amount REAL,
             status TEXT DEFAULT 'pending'
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_number TEXT
         )
     """)
     conn.commit()
@@ -105,6 +112,7 @@ def admin_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="💳 Karta qo'shish / Sozlash", callback_data="admin_manage_cards")],
             [InlineKeyboardButton(text="💰 Balans boshqarish (AEXCoin)", callback_data="admin_change_bal")],
             [InlineKeyboardButton(text="📢 Obuna kanali qo'shish", callback_data="admin_add_channel")],
             [InlineKeyboardButton(text="🗑 Kanallarni tozalash", callback_data="admin_clear_channels")]
@@ -215,7 +223,6 @@ def check_win(b):
     if " " not in b: return "Draw"
     return None
 
-# --- Bot Bilan O'ynash ---
 @dp.message(F.text == "🤖 Bot bilan o'ynash")
 async def vs_bot_handler(message: types.Message):
     if not await check_sub(message.from_user.id): return
@@ -228,7 +235,6 @@ async def vs_bot_handler(message: types.Message):
     }
     await message.answer("🤖 Botga qarshi o'yin boshlandi! Siz: ❌\nNavbatingiz:", reply_markup=get_xo_board(g_id))
 
-# --- Do'st Bilan O'ynash ---
 @dp.message(F.text == "👥 Do'st bilan o'ynash")
 async def vs_p_handler(message: types.Message):
     if not await check_sub(message.from_user.id): return
@@ -313,25 +319,46 @@ async def finish_game(msg, g_id, winner):
     await msg.edit_text(txt, reply_markup=get_xo_board(g_id))
     del active_games[g_id]
 
-# --- Admin va Balans boshqaruvi ---
+# --- To'lov va Karta Boshqaruvi ---
 @dp.message(F.text == "💳 Hisob to'ldirish")
 async def dep_cmd(msg: types.Message, state: FSMContext):
+    cards = db_query("SELECT card_number FROM cards", fetchall=True)
+    if not cards:
+        return await msg.answer("Hozircha to'lov kartalari biriktirilmagan. Keyinroq urinib ko'ring!")
+        
+    card_text = "\n".join([f"💳 `{c[0]}`" for c in cards])
     await state.set_state(Form.waiting_for_deposit)
-    await msg.answer("To'ldirmoqchi bo'lgan AEXCoin miqdorini kiriting:")
+    await msg.answer(
+        f"To'lov qilish uchun quyidagi kartalarga pul o'tkazing:\n\n{card_text}\n\n"
+        f"To'lagan summangiz va AEXCoin miqdorini kiriting:",
+        parse_mode="Markdown"
+    )
 
 @dp.message(Form.waiting_for_deposit)
 async def proc_dep(msg: types.Message, state: FSMContext):
     if not msg.text.isdigit(): return await msg.answer("Faqat raqam kiriting!")
     db_query("INSERT INTO deposit_requests (user_id, amount) VALUES (?, ?)", (msg.from_user.id, float(msg.text)), commit=True)
     await state.clear()
-    await msg.answer("So'rov adminga yuborildi.")
+    await msg.answer("So'rov adminga yuborildi. Tekshiruvdan so'ng hisobingizga qo'shiladi.")
 
+# --- Admin Panel & Karta Sozlamalari ---
 @dp.message(F.text == "⚙️ Admin Panel")
 async def adm_cmd(msg: types.Message):
     if msg.from_user.id == ADMIN_ID:
         await msg.answer("Admin paneli:", reply_markup=admin_keyboard())
 
-# --- Admin AEXCoin Balans O'zgartirish ---
+@dp.callback_query(F.data == "admin_manage_cards")
+async def admin_manage_cards_start(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(Form.waiting_for_card)
+    await call.message.answer("Yangi karta raqami va egalari ismini kiriting:\n(Masalan: `8600 0000 0000 0000 (A.A)`):")
+
+@dp.message(Form.waiting_for_card)
+async def process_add_card(msg: types.Message, state: FSMContext):
+    card_num = msg.text
+    db_query("INSERT INTO cards (card_number) VALUES (?)", (card_num,), commit=True)
+    await state.clear()
+    await msg.answer(f"✅ Yangi karta muvaffaqiyatli qo'shildi:\n`{card_num}`", parse_mode="Markdown")
+
 @dp.callback_query(F.data == "admin_change_bal")
 async def admin_change_bal_start(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_for_add_bal_user)
@@ -342,7 +369,7 @@ async def process_bal_user(msg: types.Message, state: FSMContext):
     if not msg.text.isdigit(): return await msg.answer("ID faqat raqamlardan iborat bo'ladi!")
     await state.update_data(target_user_id=int(msg.text))
     await state.set_state(Form.waiting_for_add_bal_amount)
-    await msg.answer("Qancha **AEXCoin** qo'shmoqchisiz? (Ayrish uchun manfiy raqam kiriting, masalan: `-500`):")
+    await msg.answer("Qancha **AEXCoin** qo'shmoqchisiz?:")
 
 @dp.message(Form.waiting_for_add_bal_amount)
 async def process_bal_amount(msg: types.Message, state: FSMContext):
@@ -354,17 +381,9 @@ async def process_bal_amount(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     target_id = data['target_user_id']
     
-    user = db_query("SELECT user_id FROM users WHERE user_id = ?", (target_id,), fetchone=True)
-    if not user:
-        await state.clear()
-        return await msg.answer("Bunday foydalanuvchi bazadan topilmadi!")
-        
     db_query("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id), commit=True)
     await state.clear()
-    await msg.answer(f"✅ ID `{target_id}` foydalanuvchi balansiga {amount} AEXCoin muvaffaqiyatli o'zgartirildi.")
-    try:
-        await bot.send_message(target_id, f"💳 Admin tomonidan balansingizga {amount} AEXCoin o'zgartirildi.")
-    except: pass
+    await msg.answer(f"✅ ID `{target_id}` balansiga {amount} AEXCoin o'zgartirildi.")
 
 async def main():
     init_db()
