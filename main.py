@@ -3,13 +3,12 @@ import asyncio
 import random
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Telegram ID va Token ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8880269827:AAFrLdxPWnz4fEU4GMw8PkY6b_2KUrvF5b8")
 ADMIN_ID = 8694110588
 
@@ -27,7 +26,6 @@ class Form(StatesGroup):
     waiting_for_shop_item_price = State()
     waiting_for_channel = State()
 
-# --- Ma'lumotlar bazasi ---
 def init_db():
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
@@ -62,7 +60,6 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn.close()
     return result
 
-# --- Majburiy Obuna ---
 async def check_subscription(user_id: int):
     channel = db_query("SELECT value FROM settings WHERE key = 'channel'", fetchone=True)
     if not channel or not channel[0]:
@@ -71,9 +68,7 @@ async def check_subscription(user_id: int):
     channel_username = channel[0].replace("@", "")
     try:
         member = await bot.get_chat_member(chat_id=f"@{channel_username}", user_id=user_id)
-        if member.status in ["creator", "administrator", "member"]:
-            return True
-        return False
+        return member.status in ["creator", "administrator", "member"]
     except Exception:
         return True
 
@@ -88,8 +83,6 @@ def sub_keyboard(channel_username):
 def get_rank(wins, balance):
     if wins >= 100 and balance >= 30000:
         return "👑 X-O Qiroli"
-    elif wins >= 100 and balance < 30000:
-        return "💎 Olmos Afsona"
     elif wins >= 50:
         return "💎 Olmos Afsona"
     elif wins >= 30:
@@ -101,7 +94,6 @@ def get_rank(wins, balance):
     else:
         return "🌱 Yangi o'yinchi"
 
-# --- Klaviaturalar (Reply/Pastki Menyular) ---
 def main_keyboard(user_id: int):
     kb = [
         [KeyboardButton(text="🤖 Bot bilan o'ynash"), KeyboardButton(text="👥 Do'st bilan o'ynash")],
@@ -113,10 +105,9 @@ def main_keyboard(user_id: int):
         kb.append([KeyboardButton(text="⚙️ Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# Admin Panel uchun pastki menyu (Reply Keyboard)
 def admin_reply_keyboard():
     channel = db_query("SELECT value FROM settings WHERE key = 'channel'", fetchone=True)
-    ch_status = f" ({channel[0]})" if channel and channel[0] else " (Yo'q)"
+    ch_status = f" ({channel[0]})" if channel and channel[0] else " (O'chirilgan)"
     
     kb = [
         [KeyboardButton(text="💳 Karta qo'shish"), KeyboardButton(text="💰 Balans boshqarish")],
@@ -126,7 +117,6 @@ def admin_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- Start Handler ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -148,7 +138,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
             db_query("UPDATE users SET balance = balance + 500 WHERE user_id = ?", (ref_id,), commit=True)
             try:
                 await bot.send_message(ref_id, "🎉 Do'stingiz kirdi! +500 AEXCoin bonus berildi.")
-            except: pass
+            except Exception: pass
 
     await message.answer(f"Xush kelibsiz, {message.from_user.first_name}!", reply_markup=main_keyboard(u_id))
 
@@ -161,7 +151,6 @@ async def check_sub_cb(call: types.CallbackQuery):
     else:
         await call.answer("❌ Hali kanalga obuna bo'lmadingiz!", show_alert=True)
 
-# --- Profil va Statistika ---
 @dp.message(F.text == "👤 Profil & Statistika")
 async def profile_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -203,7 +192,6 @@ async def top_handler(message: types.Message, state: FSMContext):
         text += "Hozircha o'yinchilar yo'q."
     await message.answer(text, parse_mode="Markdown")
 
-# --- HISOB TO'LDIRISH BO'LIMI ---
 @dp.message(F.text == "💳 Hisob to'ldirish")
 async def deposit_menu(message: types.Message, state: FSMContext):
     await state.clear()
@@ -285,9 +273,8 @@ async def proc_dep(msg: types.Message, state: FSMContext):
     await msg.answer(f"✅ So'rov yuborildi!\nKiritilgan summa: {amount:,.0f} so'm\nHisobingizga qo'shiladi: **{amount:,.0f} AEXCoin**", parse_mode="Markdown")
     try:
         await bot.send_message(ADMIN_ID, f"💳 **Hisob to'ldirish so'rovi:**\nFoydalanuvchi: @{msg.from_user.username} (ID: `{msg.from_user.id}`)\nSumma: {amount:,.0f} so'm ({amount:,.0f} AEXCoin)", parse_mode="Markdown")
-    except: pass
+    except Exception: pass
 
-# --- AEXCoin Ishlatish (Do'kon) ---
 @dp.message(F.text == "🛍 AEXCoin ishlatish")
 async def shop_user_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -321,18 +308,19 @@ async def buy_shop_item(call: types.CallbackQuery):
     await call.message.answer(f"✅ `{name}` xarid qilindi! So'rov adminga yetkazildi.", parse_mode="Markdown")
     try:
         await bot.send_message(ADMIN_ID, f"🛍 **Yangi buyurtma!**\nFoydalanuvchi: @{call.from_user.username} (ID: `{call.from_user.id}`)\nXizmat: {name}", parse_mode="Markdown")
-    except: pass
+    except Exception: pass
 
 # --- O'YIN MANTIQI (X-O) ---
-def get_xo_board(game_id):
-    b = active_games[game_id]['board']
+def get_xo_board(game_id, disabled=False):
+    b = active_games.get(game_id, {}).get('board', [" "] * 9)
     kb = []
     for r in range(3):
         row = []
         for c in range(3):
             i = r * 3 + c
             symbol = b[i] if b[i] != " " else "➖"
-            row.append(InlineKeyboardButton(text=symbol, callback_data=f"xo_{game_id}_{i}"))
+            cb = "noop" if disabled else f"xo_{game_id}_{i}"
+            row.append(InlineKeyboardButton(text=symbol, callback_data=cb))
         kb.append(row)
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -349,10 +337,14 @@ def clear_old_user_games(user_id):
     for g_id in to_del:
         del active_games[g_id]
 
+@dp.callback_query(F.data == "noop")
+async def noop_handler(call: types.CallbackQuery):
+    await call.answer("Bu o'yin allaqachon tugagan!", show_alert=True)
+
 @dp.message(F.text == "🤖 Bot bilan o'ynash")
 async def vs_bot_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    clear_old_user_games(message.from_user.id) # Eski tugmalar xatosini oldini olish uchun
+    clear_old_user_games(message.from_user.id)
     
     g_id = f"bot_{message.from_user.id}_{int(asyncio.get_event_loop().time())}"
     active_games[g_id] = {'board': [" "] * 9, 'turn': '❌', 'player_x': message.from_user.id, 'vs_bot': True}
@@ -372,7 +364,7 @@ async def vs_p_handler(message: types.Message, state: FSMContext):
 async def join_game(call: types.CallbackQuery):
     g_id = call.data.replace("join_", "")
     if g_id not in active_games: 
-        return await call.answer("Bu o'yin allaqachon yakunlangan!", show_alert=True)
+        return await call.answer("Bu o'yin eskirgan yoki yakunlangan!", show_alert=True)
     g = active_games[g_id]
     if g['player_x'] == call.from_user.id: 
         return await call.answer("O'zingizga qarshi o'ynay olmaysiz!", show_alert=True)
@@ -389,56 +381,66 @@ async def xo_click(call: types.CallbackQuery):
     idx = int(parts[4])
     
     if g_id not in active_games: 
-        return await call.answer("O'yin allaqachon yakunlangan yoki eskirgan!", show_alert=True)
+        await call.answer("O'yin yakunlangan!", show_alert=True)
+        try:
+            await call.message.edit_text("⚠️ Bu o'yin eskirgan yoki yakunlangan.")
+        except Exception: pass
+        return
         
     g = active_games[g_id]
     u_id = call.from_user.id
     
-    if g['vs_bot'] and u_id != g['player_x']: return await call.answer("Bu sizning o'yiningiz emas!", show_alert=True)
+    if g['vs_bot'] and u_id != g['player_x']: 
+        return await call.answer("Bu sizning o'yiningiz emas!", show_alert=True)
     if not g['vs_bot']:
         exp = g['player_x'] if g['turn'] == '❌' else g['player_o']
-        if u_id != exp: return await call.answer("Hozir sizning navbatingiz emas!", show_alert=True)
+        if u_id != exp: 
+            return await call.answer("Hozir sizning navbatingiz emas!", show_alert=True)
         
-    if g['board'][idx] != " ": return await call.answer("Katak band!", show_alert=True)
+    if g['board'][idx] != " ": 
+        return await call.answer("Katak band!", show_alert=True)
     
     await call.answer()
     g['board'][idx] = g['turn']
     res = check_win(g['board'])
     
-    if res: return await finish_game(call.message, g_id, res)
+    if res: 
+        return await finish_game(call.message, g_id, res)
 
     if g['vs_bot']:
         empty_spots = [i for i, val in enumerate(g['board']) if val == " "]
         if empty_spots:
             g['board'][random.choice(empty_spots)] = '⭕'
             res_b = check_win(g['board'])
-            if res_b: return await finish_game(call.message, g_id, res_b)
+            if res_b: 
+                return await finish_game(call.message, g_id, res_b)
         await call.message.edit_text("Sizning navbatingiz: ❌", reply_markup=get_xo_board(g_id))
     else:
         g['turn'] = '⭕' if g['turn'] == '❌' else '❌'
         await call.message.edit_text(f"Navbat: {g['turn']}", reply_markup=get_xo_board(g_id))
 
 async def finish_game(msg, g_id, winner):
-    g = active_games[g_id]
-    px, po = g['player_x'], g.get('player_o')
+    g = active_games.get(g_id, {})
+    px, po = g.get('player_x'), g.get('player_o')
+    
     if winner == "Draw":
         txt = "🤝 Durang yakunlandi!"
-        db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (px,), commit=True)
+        if px: db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (px,), commit=True)
         if po: db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (po,), commit=True)
     elif winner == '❌':
         txt = "🎉 ❌ G'alaba qozondi!"
-        db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (px,), commit=True)
+        if px: db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (px,), commit=True)
         if po: db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (po,), commit=True)
     else:
         txt = "🎉 ⭕ G'alaba qozondi!"
-        db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (px,), commit=True)
+        if px: db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (px,), commit=True)
         if po: db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (po,), commit=True)
         
-    await msg.edit_text(txt, reply_markup=get_xo_board(g_id))
+    await msg.edit_text(txt, reply_markup=get_xo_board(g_id, disabled=True))
     if g_id in active_games:
         del active_games[g_id]
 
-# --- ADMIN PANEL (MENYULI TUGMALAR) ---
+# --- ADMIN PANEL ---
 @dp.message(F.text == "⚙️ Admin Panel")
 async def adm_cmd_button(msg: types.Message, state: FSMContext):
     await state.clear()
@@ -478,11 +480,11 @@ async def process_bal_user(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_add_bal_amount)
 async def process_bal_amount(msg: types.Message, state: FSMContext):
     try: amount = float(msg.text)
-    except: return await msg.answer("Noto'g'ri summa!")
+    except Exception: return await msg.answer("Noto'g'ri summa!")
     data = await state.get_data()
     db_query("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, data['target_user_id']), commit=True)
     await state.clear()
-    await msg.answer(f"✅ Balans o'zgartirildi.", reply_markup=admin_reply_keyboard())
+    await msg.answer("✅ Balans o'zgartirildi.", reply_markup=admin_reply_keyboard())
 
 @dp.message(F.text == "🛍 Xizmat qo'shish")
 async def admin_add_shop_start(msg: types.Message, state: FSMContext):
@@ -499,7 +501,7 @@ async def process_shop_name(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_shop_item_price)
 async def process_shop_price(msg: types.Message, state: FSMContext):
     try: price = float(msg.text)
-    except: return await msg.answer("Faqat raqam kiriting!")
+    except Exception: return await msg.answer("Faqat raqam kiriting!")
     data = await state.get_data()
     db_query("INSERT INTO shop_items (name, price) VALUES (?, ?)", (data['shop_name'], price), commit=True)
     await state.clear()
