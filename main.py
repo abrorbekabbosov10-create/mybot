@@ -9,9 +9,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Bot Token va Admin ID ---
+# --- Telegram ID va Token ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8880269827:AAFrLdxPWnz4fEU4GMw8PkY6b_2KUrvF5b8")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # O'zingizning Telegram ID ingizni kiriting
+ADMIN_ID = 8694110588
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -21,11 +21,11 @@ active_games = {}
 
 class Form(StatesGroup):
     waiting_for_deposit = State()
-    waiting_for_channel_id = State()
-    waiting_for_channel_url = State()
     waiting_for_add_bal_user = State()
     waiting_for_add_bal_amount = State()
     waiting_for_card = State()
+    waiting_for_shop_item_name = State()
+    waiting_for_shop_item_price = State()
 
 # --- Ma'lumotlar bazasi ---
 def init_db():
@@ -49,17 +49,16 @@ def init_db():
         )
     """)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS deposit_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount REAL,
-            status TEXT DEFAULT 'pending'
-        )
-    """)
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS cards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             card_number TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shop_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            price REAL
         )
     """)
     conn.commit()
@@ -103,7 +102,7 @@ def main_keyboard():
             [KeyboardButton(text="🤖 Bot bilan o'ynash"), KeyboardButton(text="👥 Do'st bilan o'ynash")],
             [KeyboardButton(text="👤 Profil & Statistika"), KeyboardButton(text="🏆 Reyting")],
             [KeyboardButton(text="👥 Taklif qilish"), KeyboardButton(text="💳 Hisob to'ldirish")],
-            [KeyboardButton(text="⚙️ Admin Panel")]
+            [KeyboardButton(text="🛍 AEXCoin ishlatish")]
         ],
         resize_keyboard=True
     )
@@ -111,11 +110,10 @@ def main_keyboard():
 def admin_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="💳 Karta qo'shish / Sozlash", callback_data="admin_manage_cards")],
+            [InlineKeyboardButton(text="💳 Karta qo'shish", callback_data="admin_add_card")],
             [InlineKeyboardButton(text="💰 Balans boshqarish (AEXCoin)", callback_data="admin_change_bal")],
-            [InlineKeyboardButton(text="📢 Obuna kanali qo'shish", callback_data="admin_add_channel")],
-            [InlineKeyboardButton(text="🗑 Kanallarni tozalash", callback_data="admin_clear_channels")]
+            [InlineKeyboardButton(text="🛍 Xizmat qo'shish", callback_data="admin_add_shop")],
+            [InlineKeyboardButton(text="🗑 Xizmat o'chirish", callback_data="admin_delete_shop")]
         ]
     )
 
@@ -161,12 +159,6 @@ async def start_cmd(message: types.Message):
     if await check_sub(u_id):
         await message.answer(f"Xush kelibsiz, {message.from_user.first_name}!", reply_markup=main_keyboard())
 
-@dp.callback_query(F.data == "check_subscription")
-async def check_sub_call(call: types.CallbackQuery):
-    if await check_sub(call.from_user.id):
-        await call.message.delete()
-        await call.message.answer("Obuna tasdiqlandi!", reply_markup=main_keyboard())
-
 # --- Profil va Statistika ---
 @dp.message(F.text == "👤 Profil & Statistika")
 async def profile_handler(message: types.Message):
@@ -203,6 +195,46 @@ async def top_handler(message: types.Message):
         text += f"{idx}. @{name} — {wins} ta g'alaba ({get_rank(wins, balance)})\n"
     await message.answer(text, parse_mode="Markdown")
 
+# --- AEXCoin ishlatish (Do'kon) ---
+@dp.message(F.text == "🛍 AEXCoin ishlatish")
+async def shop_user_handler(message: types.Message):
+    if not await check_sub(message.from_user.id): return
+    items = db_query("SELECT id, name, price FROM shop_items", fetchall=True)
+    if not items:
+        return await message.answer("🛍 Hozircha AEXCoin evaziga xarid qilish uchun maxsus xizmatlar mavjud emas.")
+    
+    text = "🛍 **AEXCoin xizmatlar do'koni:**\n\n"
+    kb = []
+    for item_id, name, price in items:
+        text += f"🔹 **{name}** — {price} AEXCoin\n"
+        kb.append([InlineKeyboardButton(text=f"Sotib olish: {name}", callback_data=f"buy_shop_{item_id}")])
+    
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("buy_shop_"))
+async def buy_shop_item(call: types.CallbackQuery):
+    item_id = int(call.data.replace("buy_shop_", ""))
+    item = db_query("SELECT name, price FROM shop_items WHERE id = ?", (item_id,), fetchone=True)
+    if not item:
+        return await call.answer("Xizmat topilmadi!", show_alert=True)
+    
+    u = db_query("SELECT balance FROM users WHERE user_id = ?", (call.from_user.id,), fetchone=True)
+    user_bal = u[0]
+    name, price = item[0], item[1]
+    
+    if user_bal < price:
+        return await call.answer(f"Mablag' yetarli emas! Sizda {user_bal} AEXCoin bor.", show_alert=True)
+    
+    # Balansdan ayirish
+    db_query("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, call.from_user.id), commit=True)
+    await call.answer("So'rov yuborildi!", show_alert=True)
+    await call.message.answer(f"✅ `{name}` uchun {price} AEXCoin to'landi! So'rov adminga yetkazildi.", parse_mode="Markdown")
+    
+    # Adminga xabar
+    try:
+        await bot.send_message(ADMIN_ID, f"🛍 **Yangi buyurtma!**\nFoydalanuvchi: @{call.from_user.username} (ID: `{call.from_user.id}`)\nXizmat: {name}\nNarxi: {price} AEXCoin", parse_mode="Markdown")
+    except: pass
+
 # --- O'YIN MANTIQI (X-O) ---
 def get_xo_board(game_id):
     b = active_games[game_id]['board']
@@ -211,7 +243,8 @@ def get_xo_board(game_id):
         row = []
         for c in range(3):
             i = r * 3 + c
-            row.append(InlineKeyboardButton(text=b[i] if b[i] != " " else " ", callback_data=f"xo_{game_id}_{i}"))
+            symbol = b[i] if b[i] != " " else "➖"
+            row.append(InlineKeyboardButton(text=symbol, callback_data=f"xo_{game_id}_{i}"))
         kb.append(row)
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -229,7 +262,7 @@ async def vs_bot_handler(message: types.Message):
     g_id = f"bot_{message.from_user.id}_{int(asyncio.get_event_loop().time())}"
     active_games[g_id] = {
         'board': [" "] * 9,
-        'turn': 'X',
+        'turn': '❌',
         'player_x': message.from_user.id,
         'vs_bot': True
     }
@@ -241,7 +274,7 @@ async def vs_p_handler(message: types.Message):
     g_id = f"pvp_{message.from_user.id}_{int(asyncio.get_event_loop().time())}"
     active_games[g_id] = {
         'board': [" "] * 9,
-        'turn': 'X',
+        'turn': '❌',
         'player_x': message.from_user.id,
         'player_o': None,
         'vs_bot': False
@@ -256,7 +289,7 @@ async def join_game(call: types.CallbackQuery):
     g = active_games[g_id]
     if g['player_x'] == call.from_user.id: return await call.answer("O'zingizga qarshi o'ynay olmaysiz!", show_alert=True)
     g['player_o'] = call.from_user.id
-    await call.message.edit_text("🎮 O'yin boshlandi!\n❌ - Siz\n⭕ - Raqib\nNavbat: ❌", reply_markup=get_xo_board(g_id))
+    await call.message.edit_text("🎮 O'yin boshlandi!\n❌ - Yaratuvchi\n⭕ - Qo'shilgan raqib\nNavbat: ❌", reply_markup=get_xo_board(g_id))
 
 @dp.callback_query(F.data.startswith("xo_"))
 async def xo_click(call: types.CallbackQuery):
@@ -270,7 +303,7 @@ async def xo_click(call: types.CallbackQuery):
     if g['vs_bot']:
         if u_id != g['player_x']: return
     else:
-        exp = g['player_x'] if g['turn'] == 'X' else g['player_o']
+        exp = g['player_x'] if g['turn'] == '❌' else g['player_o']
         if u_id != exp: return await call.answer("Hozir sizning navbatingiz emas!", show_alert=True)
         
     if g['board'][idx] != " ": return await call.answer("Katak band!", show_alert=True)
@@ -283,19 +316,17 @@ async def xo_click(call: types.CallbackQuery):
         return
 
     if g['vs_bot']:
-        g['turn'] = 'O'
         empty_spots = [i for i, val in enumerate(g['board']) if val == " "]
         if empty_spots:
             bot_move = random.choice(empty_spots)
-            g['board'][bot_move] = 'O'
+            g['board'][bot_move] = '⭕'
             res_b = check_win(g['board'])
             if res_b:
                 await finish_game(call.message, g_id, res_b)
                 return
-        g['turn'] = 'X'
         await call.message.edit_text("Sizning navbatingiz: ❌", reply_markup=get_xo_board(g_id))
     else:
-        g['turn'] = 'O' if g['turn'] == 'X' else 'X'
+        g['turn'] = '⭕' if g['turn'] == '❌' else '❌'
         await call.message.edit_text(f"Navbat: {g['turn']}", reply_markup=get_xo_board(g_id))
 
 async def finish_game(msg, g_id, winner):
@@ -307,7 +338,7 @@ async def finish_game(msg, g_id, winner):
         txt = "🤝 Durang yakunlandi!"
         db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (px,), commit=True)
         if po: db_query("UPDATE users SET draws = draws + 1 WHERE user_id = ?", (po,), commit=True)
-    elif winner == 'X':
+    elif winner == '❌':
         txt = "🎉 ❌ G'alaba qozondi!"
         db_query("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (px,), commit=True)
         if po: db_query("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (po,), commit=True)
@@ -319,7 +350,7 @@ async def finish_game(msg, g_id, winner):
     await msg.edit_text(txt, reply_markup=get_xo_board(g_id))
     del active_games[g_id]
 
-# --- To'lov va Karta Boshqaruvi ---
+# --- To'lov ---
 @dp.message(F.text == "💳 Hisob to'ldirish")
 async def dep_cmd(msg: types.Message, state: FSMContext):
     cards = db_query("SELECT card_number FROM cards", fetchall=True)
@@ -337,30 +368,33 @@ async def dep_cmd(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_deposit)
 async def proc_dep(msg: types.Message, state: FSMContext):
     if not msg.text.isdigit(): return await msg.answer("Faqat raqam kiriting!")
-    db_query("INSERT INTO deposit_requests (user_id, amount) VALUES (?, ?)", (msg.from_user.id, float(msg.text)), commit=True)
     await state.clear()
     await msg.answer("So'rov adminga yuborildi. Tekshiruvdan so'ng hisobingizga qo'shiladi.")
+    try:
+        await bot.send_message(ADMIN_ID, f"💳 **Hisob to'ldirish so'rovi:**\nFoydalanuvchi: @{msg.from_user.username} (ID: `{msg.from_user.id}`)\nMiqdor: {msg.text}", parse_mode="Markdown")
+    except: pass
 
-# --- Admin Panel & Karta Sozlamalari ---
-@dp.message(F.text == "⚙️ Admin Panel")
+# --- Faqat Admin Kiradigan Panel (/admin) ---
+@dp.message(Command("admin"))
 async def adm_cmd(msg: types.Message):
     if msg.from_user.id == ADMIN_ID:
-        await msg.answer("Admin paneli:", reply_markup=admin_keyboard())
+        await msg.answer("⚙️ Admin paneli:", reply_markup=admin_keyboard())
 
-@dp.callback_query(F.data == "admin_manage_cards")
-async def admin_manage_cards_start(call: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "admin_add_card")
+async def admin_add_card_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
     await state.set_state(Form.waiting_for_card)
-    await call.message.answer("Yangi karta raqami va egalari ismini kiriting:\n(Masalan: `8600 0000 0000 0000 (A.A)`):")
+    await call.message.answer("Yangi karta raqami va egalari ismini kiriting:")
 
 @dp.message(Form.waiting_for_card)
 async def process_add_card(msg: types.Message, state: FSMContext):
-    card_num = msg.text
-    db_query("INSERT INTO cards (card_number) VALUES (?)", (card_num,), commit=True)
+    db_query("INSERT INTO cards (card_number) VALUES (?)", (msg.text,), commit=True)
     await state.clear()
-    await msg.answer(f"✅ Yangi karta muvaffaqiyatli qo'shildi:\n`{card_num}`", parse_mode="Markdown")
+    await msg.answer(f"✅ Yangi karta muvaffaqiyatli qo'shildi:\n`{msg.text}`", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_change_bal")
 async def admin_change_bal_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
     await state.set_state(Form.waiting_for_add_bal_user)
     await call.message.answer("Balansini o'zgartirmoqchi bo'lgan foydalanuvchining **Telegram ID** raqamini kiriting:")
 
@@ -384,6 +418,47 @@ async def process_bal_amount(msg: types.Message, state: FSMContext):
     db_query("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id), commit=True)
     await state.clear()
     await msg.answer(f"✅ ID `{target_id}` balansiga {amount} AEXCoin o'zgartirildi.")
+
+# --- Admin Xizmatlar Qo'shish ---
+@dp.callback_query(F.data == "admin_add_shop")
+async def admin_add_shop_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    await state.set_state(Form.waiting_for_shop_item_name)
+    await call.message.answer("Xizmat nomini kiriting (Masalan: `Telegram Premium 1 oy`):")
+
+@dp.message(Form.waiting_for_shop_item_name)
+async def process_shop_name(msg: types.Message, state: FSMContext):
+    await state.update_data(shop_name=msg.text)
+    await state.set_state(Form.waiting_for_shop_item_price)
+    await msg.answer("Ushbu xizmat necha AEXCoin bo'lsin?:")
+
+@dp.message(Form.waiting_for_shop_item_price)
+async def process_shop_price(msg: types.Message, state: FSMContext):
+    try:
+        price = float(msg.text)
+    except ValueError:
+        return await msg.answer("Narxni faqat raqamlarda kiriting!")
+    
+    data = await state.get_data()
+    db_query("INSERT INTO shop_items (name, price) VALUES (?, ?)", (data['shop_name'], price), commit=True)
+    await state.clear()
+    await msg.answer(f"✅ Yangi xizmat qo'shildi: **{data['shop_name']}** — {price} AEXCoin", parse_mode="Markdown")
+
+@dp.callback_query(F.data == "admin_delete_shop")
+async def admin_del_shop(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID: return
+    items = db_query("SELECT id, name FROM shop_items", fetchall=True)
+    if not items:
+        return await call.answer("O'chirish uchun xizmatlar mavjud emas!", show_alert=True)
+    kb = [[InlineKeyboardButton(text=f"❌ {name}", callback_data=f"del_item_{item_id}")] for item_id, name in items]
+    await call.message.answer("O'chirmoqchi bo'lgan xizmatni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("del_item_"))
+async def process_del_item(call: types.CallbackQuery):
+    item_id = int(call.data.replace("del_item_", ""))
+    db_query("DELETE FROM shop_items WHERE id = ?", (item_id,), commit=True)
+    await call.answer("Xizmat o'chirildi!", show_alert=True)
+    await call.message.delete()
 
 async def main():
     init_db()
